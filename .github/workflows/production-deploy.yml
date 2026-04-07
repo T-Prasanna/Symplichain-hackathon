@@ -7,9 +7,6 @@ on:
 
 env:
   AWS_REGION: ap-south-1
-  S3_BUCKET: ${{ secrets.PROD_S3_BUCKET }}
-  CLOUDFRONT_ID: ${{ secrets.PROD_CLOUDFRONT_ID }}
-  EC2_HOST: ${{ secrets.PROD_EC2_HOST }}
   EC2_USER: ubuntu
   DEPLOY_PATH: /home/ubuntu/symflow
 
@@ -26,6 +23,8 @@ jobs:
     name: Build & Deploy Frontend to S3
     runs-on: ubuntu-latest
     needs: approve
+    # Only run if the required secrets are configured
+    if: ${{ secrets.PROD_S3_BUCKET != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -51,15 +50,19 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Sync to S3
-        run: aws s3 sync frontend/build/ s3://${{ env.S3_BUCKET }} --delete
+        run: aws s3 sync frontend/build/ s3://${{ secrets.PROD_S3_BUCKET }} --delete
 
       - name: Invalidate CloudFront cache
-        run: aws cloudfront create-invalidation --distribution-id ${{ env.CLOUDFRONT_ID }} --paths "/*"
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.PROD_CLOUDFRONT_ID }} \
+            --paths "/*"
 
   deploy-backend:
     name: Deploy Backend to Production EC2
     runs-on: ubuntu-latest
     needs: deploy-frontend
+    if: ${{ always() && needs.deploy-frontend.result != 'failure' && secrets.PROD_EC2_HOST != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -70,7 +73,7 @@ jobs:
 
       - name: Deploy to EC2
         run: |
-          ssh -o StrictHostKeyChecking=no -i key.pem ${{ env.EC2_USER }}@${{ env.EC2_HOST }} << 'EOF'
+          ssh -o StrictHostKeyChecking=no -i key.pem ${{ env.EC2_USER }}@${{ secrets.PROD_EC2_HOST }} << 'EOF'
             set -e
             cd ${{ env.DEPLOY_PATH }}
 
@@ -96,11 +99,11 @@ jobs:
     name: Notify on Failure
     runs-on: ubuntu-latest
     needs: [deploy-frontend, deploy-backend]
-    if: failure()
+    if: ${{ failure() && secrets.SLACK_WEBHOOK_URL != '' }}
     steps:
       - name: Post failure to Slack
         uses: slackapi/slack-github-action@v1
         with:
-          payload: '{"text":"🚨 Production deploy FAILED on commit ${{ github.sha }} by ${{ github.actor }}"}'
+          payload: '{"text":"Production deploy FAILED on commit ${{ github.sha }} by ${{ github.actor }}"}'
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
